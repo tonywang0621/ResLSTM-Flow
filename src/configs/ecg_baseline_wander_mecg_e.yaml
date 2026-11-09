@@ -1,0 +1,113 @@
+data_dir: "../data/ecg_baseline_wander"
+root_dir: "../runs/ecg_baseline_wander"
+
+checkpoint_dir: "${root_dir}/checkpoint"
+results_dir: "${root_dir}/results"
+log_dir: "${root_dir}/log"
+
+exp_name: ptbxl_lead2_baseline_wander_mecg_e
+model_name: mecg_e
+seed: 42
+log_tensorboard: True
+log_config: False
+log_model_architecture: False
+
+training:
+  # MECG-E paper-faithful recipe (Hung et al. 2024 / official khhungg/MECG-E
+  # pipeline.py + config/MECGE_phase.yaml): AdamW(betas=[0.8, 0.99]), lr=1e-4,
+  # ExponentialLR(gamma=0.99), batch_size=96. The official optimizer call
+  # passes no weight_decay, so it falls back to AdamW's default 1e-2 (also
+  # the paper's stated value); this project's AdamW builder defaults to 0.0,
+  # so it is set explicitly here. The official code has gradient clipping
+  # commented out -> grad_clip_norm: null (the shared training loop otherwise
+  # clips at 1.0).
+  # For the unified convergence-controlled benchmark, train_epochs is a large
+  # cap and the best checkpoint is selected by each model's validation loss while optimizer,
+  # LR, weight decay, and scheduler remain aligned with MECG-E.
+  train_epochs: 50000
+  batch_size: 96
+  lr: 1.0e-4
+  optimizer: AdamW
+  betas: [0.8, 0.99]
+  weight_decay: 1.0e-2
+  scheduler: ExponentialLR
+  gamma: 0.99
+  grad_clip_norm: null
+  eval_every_epochs: 1
+  validation_metrics_every_epochs: 1
+  save_every_epochs: 5
+  early_stopping_patience_epochs: 30
+  early_stopping_min_delta: 1.0e-4
+  selection_metric: val_loss
+  progress_bar: True
+  resume: False
+  resume_checkpoint: null
+
+evaluation:
+  low_frequency_high_hz: 0.5
+
+dataset:
+  name: ecg_baseline_wander
+  data_dir: "${data_dir}"
+  train_dataset: ptbxl
+  external_test_datasets:
+    - mit_bih
+    - chapman
+    - cpsc
+    - qtdb
+  lead: II
+  split:
+    strategy: ptbxl_official_folds
+    patient_wise: True
+    train_folds: [1, 2, 3, 4, 5, 6, 7, 8]
+    validation_fold: 9
+    test_fold: 10
+    ratio: [0.8, 0.1, 0.1]
+  clean_reference:
+    filter_type: butterworth
+    filter_order: 4
+    zero_phase: True
+    bandpass_hz: [0.05, 40.0]
+  resample_hz: 360
+  window_size: 512
+  overlap_ratio: 0.0
+  normalization: endpoint_center
+  baseline_wander:
+    train_source: nstdb
+    # DeepFilter (Romero et al. 2021) Data_Preparation noise scaling: the
+    # NSTDB baseline segment is normalised by its own peak-to-peak range,
+    # then scaled to delta * ptp(clean ECG) where delta = randint(20, 200) /
+    # 100 per window (noise_sampling: deepfilter + integer_percent_uniform).
+    # robustness_alpha_values is a separate discrete grid used only by
+    # Experiment 2 (exp2-strength sweep), matching DeepFilter / MECG-E's
+    # reported noise-amplitude bins.
+    alpha_mode: peak_to_peak_ratio
+    noise_sampling: deepfilter
+    alpha_sampling: integer_percent_uniform
+    alpha_values: [0.2, 2.0]
+    robustness_alpha_values: [0.2, 0.6, 1.0, 1.5, 2.0]
+    controlled_frequencies_hz: [0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0]
+    test_types:
+      - nstdb
+      - sinusoidal
+      - multi_sine
+      - random_low_frequency_drift
+  eps: 1.0e-10
+
+model:
+  fea: "pha"
+  norm: False
+  fmamba: True
+  dense_channel: 32
+  compress_factor: 0.3
+  num_tscblocks: 4
+  d_state: 16
+  d_conv: 4
+  expand: 4
+  norm_epsilon: 1.0e-5
+  sampling_rate: 360
+  n_fft: 64
+  hop_size: 8
+  win_size: 64
+  beta: 2
+  loss_fn: "time+com+con"

@@ -1,0 +1,131 @@
+data_dir: "../data/ecg_baseline_wander"
+root_dir: "../runs/ecg_baseline_wander"
+
+checkpoint_dir: "${root_dir}/checkpoint"
+results_dir: "${root_dir}/results"
+log_dir: "${root_dir}/log"
+
+exp_name: ptbxl_lead2_baseline_wander_pc_scfm
+model_name: pc_scfm
+seed: 42
+log_tensorboard: True
+log_config: False
+log_model_architecture: False
+
+training:
+  train_epochs: 50000
+  batch_size: 96
+  lr: 1.0e-4
+  optimizer: AdamW
+  betas: [0.8, 0.99]
+  scheduler: ExponentialLR
+  gamma: 0.99
+  eval_every_epochs: 1
+  validation_metrics_every_epochs: 1
+  save_every_epochs: 5
+  early_stopping_patience_epochs: 30
+  early_stopping_min_delta: 1.0e-4
+  selection_metric: val_loss
+  progress_bar: True
+  resume: False
+  resume_checkpoint: null
+
+evaluation:
+  low_frequency_high_hz: 0.5
+
+dataset:
+  name: ecg_baseline_wander
+  data_dir: "${data_dir}"
+  train_dataset: ptbxl
+  external_test_datasets:
+    - mit_bih
+    - chapman
+    - cpsc
+    - qtdb
+  lead: II
+  split:
+    strategy: ptbxl_official_folds
+    patient_wise: True
+    train_folds: [1, 2, 3, 4, 5, 6, 7, 8]
+    validation_fold: 9
+    test_fold: 10
+    ratio: [0.8, 0.1, 0.1]
+  clean_reference:
+    filter_type: butterworth
+    filter_order: 4
+    zero_phase: True
+    bandpass_hz: [0.05, 40.0]
+  resample_hz: 360
+  window_size: 512
+  overlap_ratio: 0.0
+  normalization: endpoint_center
+  baseline_wander:
+    train_source: nstdb
+    # DeepFilter (Romero et al. 2021) Data_Preparation noise scaling: the
+    # NSTDB baseline segment is normalised by its own peak-to-peak range,
+    # then scaled to delta * ptp(clean ECG) where delta = randint(20, 200) /
+    # 100 per window (noise_sampling: deepfilter + integer_percent_uniform).
+    # robustness_alpha_values is a separate discrete grid used only by
+    # Experiment 2 (exp2-strength sweep), matching DeepFilter / MECG-E's
+    # reported noise-amplitude bins.
+    alpha_mode: peak_to_peak_ratio
+    noise_sampling: deepfilter
+    alpha_sampling: integer_percent_uniform
+    alpha_values: [0.2, 2.0]
+    robustness_alpha_values: [0.2, 0.6, 1.0, 1.5, 2.0]
+    controlled_frequencies_hz: [0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0]
+    test_types:
+      - nstdb
+      - sinusoidal
+      - multi_sine
+      - random_low_frequency_drift
+  eps: 1.0e-10
+
+model:
+  fea: "pha"
+  phase_representation: "raw"
+  norm: False
+  dense_channel: 64
+  compress_factor: 0.3
+  num_tscblocks: 4
+  d_state: 16
+  d_conv: 4
+  expand: 4
+  norm_epsilon: 1.0e-5
+  attention_heads: 8
+  attention_dropout: 0.0
+  attention_position: "before_mamba"
+  use_time_attention: true
+  use_freq_attention: true
+
+  pcscfm_enabled: true
+  t_max: 4
+  stochastic_policy: false
+  policy_hidden: 128
+  flow_coeff_count: 32
+  flow_basis: "cosine"
+  flow_nfe: 4
+  flow_samples: 4
+  baseline_kernel_size: 129
+  classical_kernel_size: 129
+  safety_kappa: 0.15
+  safety_eps: 1.0e-6
+  stop_threshold: 0.95
+  reject_threshold: 0.98
+  reject_uncertainty_threshold: 0.25
+  reject_disagreement_threshold: 0.25
+  oracle_stop_l1: 0.02
+
+  sampling_rate: 360
+  n_fft: 64
+  hop_size: 8
+  win_size: 64
+  beta: 2
+  loss_fn: "time+com+con+lf+morph+flow+bc+value+risk"
+  lambda_lf: 0.2
+  lambda_morph: 0.1
+  lambda_flow: 0.01
+  lambda_bc: 0.02
+  lambda_policy_value: 0.01
+  lambda_step: 0.001
+  lambda_reject: 0.01

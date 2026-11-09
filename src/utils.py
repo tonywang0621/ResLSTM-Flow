@@ -1,0 +1,484 @@
+import logging
+import os
+import random
+import sys
+import time
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from scipy.signal import spectrogram, welch
+
+from utils_ecg import (
+    centered_cosine_similarity,
+    cosine_similarity,
+    low_frequency_power_reduction,
+    maximum_absolute_distance,
+    nanmean_or_nan,
+    prd,
+    prd_mecge_official,
+    qrs_amplitude_error,
+    r_peak_timing_error_ms,
+    rr_interval_mae_ms,
+    snr_db,
+    snr_improvement_db,
+    ssd,
+)
+
+
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print(f"Global seed set to {seed}")
+
+
+def setup_logger(args, log_dir) -> logging.Logger:
+    for noisy in ["matplotlib", "PIL", "torch"]:
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    logger = logging.getLogger(args.exp_name)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    formatter = logging.Formatter(fmt="%(asctime)s: %(message)s")
+    fh = logging.FileHandler(Path(log_dir) / "log.log", mode="w")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+    return logger
+
+
+def plot_loss_curves(train_losses, val_losses, eval_every, results_dir, val_pccs=None, x_axis_label="Training iteration"):
+    loss_curves_dir = Path(results_dir) / "loss_curves"
+    loss_curves_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_curve(values, steps, label, filename, ylabel):
+        if not values:
+            return
+        values = np.asarray(values, dtype=np.float64)
+        steps = np.asarray(steps)
+        valid = ~np.isnan(values)
+        if not np.any(valid):
+            return
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(steps[valid], values[valid], label=label, linewidth=2, marker="o", markersize=3)
+        ax.set_xlabel(x_axis_label)
+        ax.set_ylabel(ylabel)
+        ax.set_title(label)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(loss_curves_dir / filename, dpi=200)
+        plt.close(fig)
+
+    save_curve(train_losses, np.arange(1, len(train_losses) + 1), "Train Loss", "train_loss.png", "loss")
+    val_steps = np.arange(1, len(val_losses) + 1) * eval_every
+    save_curve(val_losses, val_steps, "Val Loss", "val_loss.png", "loss")
+    if train_losses and val_losses:
+        train_values = np.asarray(train_losses, dtype=np.float64)
+        val_values = np.asarray(val_losses, dtype=np.float64)
+        train_steps = np.arange(1, len(train_values) + 1)
+        val_steps = np.arange(1, len(val_values) + 1) * eval_every
+        train_valid = ~np.isnan(train_values)
+        val_valid = ~np.isnan(val_values)
+        if np.any(train_valid) and np.any(val_valid):
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(
+                train_steps[train_valid],
+                train_values[train_valid],
+                label="Train Loss",
+                linewidth=2,
+                marker="o",
+                markersize=3,
+            )
+            ax.plot(
+                val_steps[val_valid],
+                val_values[val_valid],
+                label="Val Loss",
+                linewidth=2,
+                marker="o",
+                markersize=3,
+            )
+            ax.set_xlabel(x_axis_label)
+            ax.set_ylabel("loss")
+            ax.set_title("Train and Val Loss")
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(loss_curves_dir / "train_val_loss.png", dpi=200)
+            plt.close(fig)
+    if val_pccs:
+        val_pcc_steps = np.arange(1, len(val_pccs) + 1) * eval_every
+        save_curve(val_pccs, val_pcc_steps, "Val PCC", "val_pcc.png", "PCC")
+    return loss_curves_dir
+
+
+def reconstruction_metrics_from_arrays(noisy, clean, pred, fs=250, low_freq_hz=0.5, eps=1e-10, metric_protocol="default"):
+    summary = reconstruction_metric_summary_from_arrays(
+        noisy,
+        clean,
+        pred,
+        fs=fs,
+        low_freq_hz=low_freq_hz,
+        eps=eps,
+        metric_protocol=metric_protocol,
+    )
+    return {key: stats["mean"] for key, stats in summary.items()}
+
+
+def reconstruction_metric_summary_from_arrays(noisy, clean, pred, fs=250, low_freq_hz=0.5, eps=1e-10, metric_protocol="default"):
+    noisy = np.squeeze(np.asarray(noisy), axis=1)
+    clean = np.squeeze(np.asarray(clean), axis=1)
+    pred = np.squeeze(np.asarray(pred), axis=1)
+    prd_fn = prd_mecge_official if metric_protocol == "mecge_official" else prd
+    metric_values = {
+        "SSD": ssd(clean, pred),
+        "MAD": maximum_absolute_distance(clean, pred),
+        "PRD": prd_fn(clean, pred, eps=eps),
+        "CosSim": cosine_similarity(clean, pred, eps=eps),
+        "Output_SNR_dB": snr_db(clean, pred, eps=eps),
+        "SNR_Improvement_dB": snr_improvement_db(clean, noisy, pred, eps=eps),
+        "LF_Reduction_dB": low_frequency_power_reduction(noisy, pred, fs=fs, high_hz=low_freq_hz, eps=eps),
+        "R_Peak_Timing_Error_ms": r_peak_timing_error_ms(clean, pred, fs=fs),
+        "RR_Interval_MAE_ms": rr_interval_mae_ms(clean, pred, fs=fs),
+        "RMSE": np.sqrt(np.mean((clean - pred) ** 2, axis=-1)),
+        "Centered_CosSim": centered_cosine_similarity(clean, pred, eps=eps),
+        "QRS_Amplitude_Error": qrs_amplitude_error(clean, pred, fs=fs),
+    }
+    summary = {}
+    for key, values in metric_values.items():
+        values = np.asarray(values, dtype=np.float64)
+        valid = values[~np.isnan(values)]
+        summary[key] = {
+            "mean": nanmean_or_nan(values),
+            "std": float(np.std(valid)) if valid.size else float("nan"),
+            "count": int(valid.size),
+        }
+    return summary
+
+
+def plot_prediction_results(
+    model,
+    dataset,
+    device,
+    results_dir,
+    num_samples=3,
+    seed=42,
+    eps=1e-10,
+    fs=250,
+    filename_prefix="",
+):
+    results_dir = Path(results_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    if len(dataset) == 0:
+        raise ValueError("Cannot plot predictions from an empty dataset.")
+
+    rng = random.Random(seed)
+    sample_indices = rng.sample(range(len(dataset)), min(num_samples, len(dataset)))
+    output_paths = []
+
+    model.eval()
+    with torch.no_grad():
+        for plot_idx, sample_idx in enumerate(sample_indices):
+            noisy, clean = dataset[sample_idx]
+            pred = model(noisy.unsqueeze(0).to(device)).squeeze(0).detach().cpu().numpy()
+            noisy_np = noisy.detach().cpu().numpy()
+            clean_np = clean.detach().cpu().numpy()
+
+            noisy_1d = np.squeeze(noisy_np)
+            clean_1d = np.squeeze(clean_np)
+            pred_1d = np.squeeze(pred)
+            time_axis = np.arange(clean_1d.shape[-1])
+
+            fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+            axes[0].plot(time_axis, noisy_1d, color="tab:gray", linewidth=1.0)
+            axes[0].set_ylabel("Input")
+            axes[1].plot(time_axis, clean_1d, color="tab:blue", linewidth=1.0)
+            axes[1].plot(time_axis, pred_1d, color="tab:red", linewidth=1.0, alpha=0.85)
+            axes[1].set_ylabel("ECG")
+            axes[2].plot(time_axis, clean_1d - pred_1d, color="tab:purple", linewidth=1.0)
+            axes[2].set_ylabel("Residual")
+            axes[2].set_xlabel("Sample")
+            for ax in axes:
+                ax.grid(True, alpha=0.2)
+            axes[0].set_title(f"Baseline Wander Removal - Sample {sample_idx}")
+            fig.tight_layout()
+
+            prefix = f"{filename_prefix}_" if filename_prefix else ""
+            output_path = results_dir / f"{prefix}prediction_sample_{plot_idx + 1}.png"
+            fig.savefig(output_path, dpi=200)
+            plt.close(fig)
+            output_paths.append(output_path)
+
+            spectral_path = results_dir / f"{prefix}spectrum_sample_{plot_idx + 1}.png"
+            _plot_spectral_diagnostics(
+                noisy_1d,
+                clean_1d,
+                pred_1d,
+                fs=fs,
+                output_path=spectral_path,
+            )
+            output_paths.append(spectral_path)
+    return output_paths
+
+
+def _plot_spectral_diagnostics(noisy, clean, restored, fs, output_path):
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+
+    def spectral_window_length(signal):
+        # ECG windows are short (default 512 samples). A 2-second STFT window
+        # leaves too few time bins, so use a shorter window for diagnostics.
+        return min(len(signal), max(64, int(fs * 0.5)))
+
+    for signal, label, color in [
+        (noisy, "Input", "tab:gray"),
+        (clean, "Clean reference", "tab:blue"),
+        (restored, "Restored", "tab:red"),
+    ]:
+        nperseg = spectral_window_length(signal)
+        freqs, psd = welch(signal, fs=fs, nperseg=nperseg)
+        axes[0, 0].semilogy(freqs, psd + 1e-12, label=label, color=color, linewidth=1.2)
+
+    axes[0, 0].set_title("PSD")
+    axes[0, 0].set_xlabel("Hz")
+    axes[0, 0].set_ylabel("Power")
+    axes[0, 0].set_xlim(0, min(40, fs / 2))
+    axes[0, 0].grid(True, alpha=0.2)
+    axes[0, 0].legend(loc="best")
+
+    residual = clean - restored
+    axes[0, 1].plot(np.arange(len(residual)) / fs, residual, color="tab:purple", linewidth=1.0)
+    axes[0, 1].set_title("Residual error")
+    axes[0, 1].set_xlabel("Second")
+    axes[0, 1].grid(True, alpha=0.2)
+
+    for ax, signal, title in [
+        (axes[1, 0], noisy, "Input spectrogram"),
+        (axes[1, 1], restored, "Restored spectrogram"),
+    ]:
+        nperseg = spectral_window_length(signal)
+        noverlap = min(nperseg - 1, nperseg // 2)
+        freqs, times, spec = spectrogram(signal, fs=fs, nperseg=nperseg, noverlap=noverlap)
+        mask = freqs <= min(40, fs / 2)
+        spec_db = 10 * np.log10(spec[mask] + 1e-12)
+        if len(times) < 2:
+            mesh = ax.imshow(
+                spec_db,
+                aspect="auto",
+                origin="lower",
+                extent=[0, len(signal) / fs, freqs[mask][0], freqs[mask][-1]],
+                cmap="magma",
+            )
+        else:
+            mesh = ax.pcolormesh(
+                times,
+                freqs[mask],
+                spec_db,
+                shading="auto",
+                cmap="magma",
+            )
+        ax.set_title(title)
+        ax.set_xlabel("Second")
+        ax.set_ylabel("Hz")
+        fig.colorbar(mesh, ax=ax, label="dB")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def get_reconstruction_metrics(model, test_loader, device, fs=250, low_freq_hz=0.5, eps=1e-10):
+    summary = get_reconstruction_metric_summary(
+        model, test_loader, device, fs=fs, low_freq_hz=low_freq_hz, eps=eps
+    )
+    return {key: stats["mean"] for key, stats in summary.items()}
+
+
+def get_reconstruction_metric_summary(model, test_loader, device, fs=250, low_freq_hz=0.5, eps=1e-10, metric_protocol="default"):
+    noisy_all, clean_all, pred_all = [], [], []
+    model.eval()
+    with torch.no_grad():
+        for batch in test_loader:
+            noisy, clean = batch[0].to(device), batch[1].to(device)
+            pred = model(noisy)
+            noisy_all.append(noisy.detach().cpu().numpy())
+            clean_all.append(clean.detach().cpu().numpy())
+            pred_all.append(pred.detach().cpu().numpy())
+
+    return reconstruction_metric_summary_from_arrays(
+        np.concatenate(noisy_all, axis=0),
+        np.concatenate(clean_all, axis=0),
+        np.concatenate(pred_all, axis=0),
+        fs=fs,
+        low_freq_hz=low_freq_hz,
+        eps=eps,
+        metric_protocol=metric_protocol,
+    )
+
+
+def _parameter_is_under(name, prefixes):
+    return any(name == prefix or name.startswith(prefix + ".") for prefix in prefixes)
+
+
+def _inactive_parameter_prefixes(model):
+    prefixes = []
+    for module_name, module in model.named_modules():
+        prefix = f"{module_name}." if module_name else ""
+
+        if hasattr(module, "h") and hasattr(module.h, "get") and not module.h.get("fmamba", True):
+            prefixes.extend([prefix + "freq_mamba", prefix + "flinear"])
+
+        if hasattr(module, "use_time_attention") and hasattr(module, "use_freq_attention"):
+            freq_active = bool(module.use_freq_attention)
+            if hasattr(module, "h") and hasattr(module.h, "get"):
+                freq_active = freq_active and bool(module.h.get("fmamba", True))
+            if not bool(module.use_time_attention) and not freq_active:
+                prefixes.extend([prefix + "attention", prefix + "sequence_context"])
+
+        if hasattr(module, "use_time_context") and hasattr(module, "use_freq_context"):
+            if not bool(module.use_time_context) and not bool(module.use_freq_context):
+                prefixes.append(prefix + "context")
+    return tuple(prefixes)
+
+
+def _partial_active_parameter_numel(name, param, module_lookup):
+    for module_name, module in module_lookup.items():
+        if not (
+            hasattr(module, "aux_output_channels")
+            and hasattr(module, "output_channels")
+            and hasattr(module, "output")
+        ):
+            continue
+        output_prefix = f"{module_name}.output." if module_name else "output."
+        if not name.startswith(output_prefix):
+            continue
+
+        owner_name = module_name.rsplit(".residual_flow", 1)[0] if module_name.endswith(".residual_flow") else module_name
+        owner = module_lookup.get(owner_name, module)
+        lambda_ecg = float(getattr(owner, "lambda_ecg_noise_aux", 0.0))
+        lambda_gaussian = float(getattr(owner, "lambda_gaussian_noise_aux", 0.0))
+        loss_fn = getattr(owner, "loss_fn", [])
+        active_aux_channels = (
+            int(getattr(module, "aux_output_channels", 0))
+            if "noise_aux" in loss_fn and lambda_ecg + lambda_gaussian > 0
+            else 0
+        )
+        active_out_channels = int(getattr(module, "output_channels", 0)) + active_aux_channels
+        if active_out_channels <= 0 or param.ndim == 0 or param.shape[0] <= active_out_channels:
+            return None
+        return int(param[:active_out_channels].numel())
+    return None
+
+
+def _count_model_parameters(model):
+    registered_params = sum(param.numel() for param in model.parameters())
+    registered_trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    state_dict_tensors = sum(tensor.numel() for tensor in model.state_dict().values())
+    inactive_prefixes = _inactive_parameter_prefixes(model)
+    module_lookup = dict(model.named_modules())
+    active_params = 0
+    active_trainable_params = 0
+
+    for name, param in model.named_parameters():
+        if _parameter_is_under(name, inactive_prefixes):
+            continue
+        active_numel = _partial_active_parameter_numel(name, param, module_lookup)
+        if active_numel is None:
+            active_numel = param.numel()
+        active_params += active_numel
+        if param.requires_grad:
+            active_trainable_params += active_numel
+
+    return (
+        active_params,
+        active_trainable_params,
+        registered_params,
+        registered_trainable_params,
+        state_dict_tensors,
+    )
+
+
+def profile_model_complexity(model, device, input_length, batch_size=1, warmup=5, repeats=20):
+    model.eval()
+    dummy = torch.zeros(batch_size, 1, input_length, device=device)
+    shot_count = int(getattr(model, "num_shots", 1))
+
+    def inference_call(x):
+        if hasattr(model, "denoising_shots") and shot_count > 1:
+            return model.denoising_shots(x).mean(dim=0)
+        return model(x)
+
+    flops = float("nan")
+    existing_forward_hooks = {
+        module: set(module._forward_hooks.keys())
+        for module in model.modules()
+    }
+    try:
+        from thop import profile
+
+        flops, _ = profile(model, inputs=(dummy,), verbose=False)
+        flops = float(flops)
+        if hasattr(model, "denoising_shots") and shot_count > 1:
+            flops *= float(shot_count)
+    except Exception:
+        pass
+    finally:
+        for module in model.modules():
+            original_hooks = existing_forward_hooks.get(module, set())
+            for hook_id in list(module._forward_hooks.keys()):
+                if hook_id not in original_hooks:
+                    module._forward_hooks.pop(hook_id, None)
+            module._buffers.pop("total_ops", None)
+            module._buffers.pop("total_params", None)
+
+    with torch.no_grad():
+        _ = inference_call(dummy)
+    (
+        params,
+        trainable_params,
+        registered_params,
+        registered_trainable_params,
+        state_dict_tensors,
+    ) = _count_model_parameters(model)
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+
+    with torch.no_grad():
+        for _ in range(warmup):
+            _ = inference_call(dummy)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        start = time.perf_counter()
+        for _ in range(repeats):
+            _ = inference_call(dummy)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elapsed = time.perf_counter() - start
+
+    peak_memory_mb = (
+        torch.cuda.max_memory_allocated(device) / (1024**2) if device.type == "cuda" else float("nan")
+    )
+    return {
+        "Parameters": float(params),
+        "Trainable_Parameters": float(trainable_params),
+        "Registered_Parameters": float(registered_params),
+        "Registered_Trainable_Parameters": float(registered_trainable_params),
+        "State_Dict_Tensor_Elements": float(state_dict_tensors),
+        "FLOPs": flops,
+        "Inference_Time_ms": float(elapsed / repeats * 1000.0),
+        "Peak_Memory_MB": float(peak_memory_mb),
+    }

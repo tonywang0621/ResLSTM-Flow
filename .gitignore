@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+/runs/*
+!/runs/README.md
+/data/*
+!/data/README.md
+*.pt
+*.pth
+*.ckpt
+*.pkl

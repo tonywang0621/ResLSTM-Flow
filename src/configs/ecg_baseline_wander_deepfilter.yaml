@@ -1,0 +1,120 @@
+data_dir: "../data/ecg_baseline_wander"
+root_dir: "../runs/ecg_baseline_wander"
+
+checkpoint_dir: "${root_dir}/checkpoint"
+results_dir: "${root_dir}/results"
+log_dir: "${root_dir}/log"
+
+exp_name: ptbxl_lead2_baseline_wander_deepfilter
+model_name: deepfilter
+seed: 42
+log_tensorboard: True
+log_config: False
+log_model_architecture: False
+
+training:
+  # DeepFilter paper-faithful recipe (Romero et al. 2021, Section 5.3 /
+  # official fperdigon/DeepFilter train_dl()): Adam, initial lr=1e-3,
+  # ReduceLROnPlateau (factor=0.5, patience=2 epochs on validation loss,
+  # floor min_lr=1e-10), batch_size=128.
+  # Note: the paper's own text says batch_size=32, but the official training
+  # function (train_dl) that actually produced the paper's results uses
+  # batch_size=128 -- batch_size=32 there only appears in test_dl() for
+  # inference batching. We follow the training code (128).
+  # Unified convergence-controlled benchmark: train_epochs is a large cap and
+  # early stopping / checkpoint selection use each model's validation loss while optimizer,
+  # LR, batch size, and ReduceLROnPlateau remain aligned with official code.
+  train_epochs: 50000
+  batch_size: 128
+  lr: 1.0e-3
+  optimizer: Adam
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+  scheduler: ReduceLROnPlateau
+  factor: 0.5
+  lr_scheduler_patience_epochs: 2
+  lr_scheduler_min_delta: 0.05
+  min_lr: 1.0e-10
+  grad_clip_norm: null  # official DeepFilter (Keras) does not clip gradients
+  eval_every_epochs: 1
+  validation_metrics_every_epochs: 1
+  save_every_epochs: 50
+  early_stopping_patience_epochs: 30
+  early_stopping_min_delta: 1.0e-4
+  selection_metric: val_loss
+  progress_bar: True
+  resume: False
+  resume_checkpoint: null
+
+evaluation:
+  low_frequency_high_hz: 0.5
+
+dataset:
+  name: ecg_baseline_wander
+  data_dir: "${data_dir}"
+  train_dataset: ptbxl
+  external_test_datasets:
+    - mit_bih
+    - chapman
+    - cpsc
+    - qtdb
+  lead: II
+  split:
+    strategy: ptbxl_official_folds
+    patient_wise: True
+    train_folds: [1, 2, 3, 4, 5, 6, 7, 8]
+    validation_fold: 9
+    test_fold: 10
+    ratio: [0.8, 0.1, 0.1]
+  clean_reference:
+    filter_type: butterworth
+    filter_order: 4
+    zero_phase: True
+    bandpass_hz: [0.05, 40.0]
+  resample_hz: 360
+  window_size: 512
+  overlap_ratio: 0.0
+  normalization: endpoint_center
+  baseline_wander:
+    train_source: nstdb
+    # DeepFilter (Romero et al. 2021) Data_Preparation noise scaling: the
+    # NSTDB baseline segment is normalised by its own peak-to-peak range,
+    # then scaled to delta * ptp(clean ECG) where delta = randint(20, 200) /
+    # 100 per window (noise_sampling: deepfilter + integer_percent_uniform).
+    # robustness_alpha_values is a separate discrete grid used only by
+    # Experiment 2 (exp2-strength sweep), matching DeepFilter / MECG-E's
+    # reported noise-amplitude bins.
+    alpha_mode: peak_to_peak_ratio
+    noise_sampling: deepfilter
+    alpha_sampling: integer_percent_uniform
+    alpha_values: [0.2, 2.0]
+    robustness_alpha_values: [0.2, 0.6, 1.0, 1.5, 2.0]
+    controlled_frequencies_hz: [0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0]
+    test_types:
+      - nstdb
+      - sinusoidal
+      - multi_sine
+      - random_low_frequency_drift
+  eps: 1.0e-10
+
+model:
+  # Official fperdigon/DeepFilter deep_filter_model_I_LANL_dilated: 6 MKLANL
+  # modules (N = 64,64,32,32,16,16), dilated at positions 2/4/6, each module
+  # followed by Dropout(0.4) then BatchNorm, then a kernel-9 linear conv.
+  input_channels: 1
+  layers: [64, 64, 32, 32, 16, 16]
+  dilated_pattern: [False, True, False, True, False, True]
+  # Non-dilated module: kernels 3/5/9/15 (8 branches, N/8 filters each).
+  kernels: [3, 5, 9, 15]
+  # Dilated module (LANLFilter_module_dilated): kernels 5/9/15 only -- NO
+  # kernel-3 branch -- so 6 branches of N/6 filters each, at dilation_rate 3.
+  dilated_kernels: [5, 9, 15]
+  dilation: 3
+  dropout: 0.4
+  output_kernel_size: 9
+  # DeepFilter paper-faithful loss (Eq. 2 / official combined_ssd_mad_loss =
+  # `max(err^2)*50 + sum(err^2)` over the time axis): mad_weight is the
+  # paper's empirically found balance term lambda=50.
+  loss_fn: "ssd+mad"
+  ssd_weight: 1.0
+  mad_weight: 50.0
