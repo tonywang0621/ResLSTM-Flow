@@ -2,7 +2,7 @@
 
 ### Abstract
 
-ResLSTM-Flow removes ECG baseline wander through a time–frequency LSTM backbone and conditional flow-matching refinement. Residual dilated convolution and DAPP provide contextual features, while a U-Net refines the reconstructed waveform and estimated baseline. This repository packages the existing v7 experiment with its original code and configuration: 30 training epochs, disabled early stopping, and single-step flow inference by default.
+ResLSTM-Flow is an ECG denoising model designed to remove baseline wander while preserving cardiac waveform morphology. It combines direct waveform restoration with residual correction to address low-frequency drift and refine the recovered signal. With a single refinement step by default, the model aims to balance denoising quality and inference efficiency for ECG signals affected by varying levels of baseline interference.
 
 ![ResLSTM-Flow architecture](figs/architecture.png)
 
@@ -26,7 +26,7 @@ ResLSTM-Flow removes ECG baseline wander through a time–frequency LSTM backbon
 
 - PyTorch 2.2.2 with matching torchaudio 2.2.2.
 - Bash on Linux or WSL for the complete experiment scripts.
-- CPU or a compatible CUDA environment. The v7 LSTM model does not require `mamba_ssm`.
+- CPU or a compatible CUDA environment.
 
 #### Environment installation
 
