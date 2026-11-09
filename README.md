@@ -26,7 +26,7 @@ ResLSTM-Flow is an ECG denoising model designed to remove baseline wander while 
 
 - PyTorch 2.2.2 with matching torchaudio 2.2.2.
 - Bash on Linux or WSL for the complete experiment scripts.
-- CPU or a compatible CUDA environment.
+- An NVIDIA GPU with a compatible driver and CUDA-enabled PyTorch is recommended. Training and inference use `cuda:0` by default; CPU execution is optional.
 
 #### Environment installation
 
@@ -37,10 +37,10 @@ ResLSTM-Flow is an ECG denoising model designed to remove baseline wander while 
    source .venv/bin/activate
    ```
 
-2. Install the appropriate PyTorch build using the [version guide](https://pytorch.org/get-started/previous-versions/). For CPU:
+2. Install CUDA-enabled PyTorch using the [official version guide](https://pytorch.org/get-started/previous-versions/). The following example uses the CUDA 12.1 build; select a build compatible with your GPU and driver:
 
    ```bash
-   python -m pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+   python -m pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cu121
    ```
 
 3. Install the dependencies:
@@ -67,7 +67,7 @@ bash scripts/run_mecge_table1_repro.sh --model "$MODEL" --nv all --seed 3407 --d
 
 This creates `dataset_bw_nv1.pkl`, `dataset_bw_nv2.pkl`, and matching `rnd_test_nv*.npy` files under `data/mecge_table1_repro/raw/`. Keep these files together. Once prepared, omit `--prepare-raw` on subsequent runs.
 
-Training also runs testing and result aggregation. Use `--device cpu` for CPU execution, or add `--resume` to continue training. Always specify `--model "$MODEL"` to select this experiment.
+Training also runs testing and result aggregation. Add `--resume` to continue training. To run on CPU, replace `--device cuda:0` with `--device cpu` in the execution commands. Always specify `--model "$MODEL"` to select this experiment.
 
 ### Testing
 
@@ -101,8 +101,8 @@ The following figures show supplied results from earlier experiments. **LSTM v7 
 #### Stage analysis and complexity
 
 ```bash
-bash scripts/analyze_model_stages.sh --model v7 --nv 1 --seed 3407 --indices 0 10 100 --device cpu
-bash scripts/run_mecge_table1_complexity_test.sh --model "$MODEL" --device cpu --no-cpu --output-root "$PWD/runs/mecge_table1_repro/complexity_test"
+bash scripts/analyze_model_stages.sh --model v7 --nv 1 --seed 3407 --indices 0 10 100 --device cuda:0
+bash scripts/run_mecge_table1_complexity_test.sh --model "$MODEL" --device cuda:0 --no-cpu --output-root "$PWD/runs/mecge_table1_repro/complexity_test"
 ```
 
 Stage analysis compares the full pre-flow reconstruction against the final flow-refined output and exports PNG, NPZ, CSV, and a manifest. It supports the main single-step v7 configuration. The explicit complexity output path keeps generated files in this workspace.
@@ -120,7 +120,7 @@ Inference variants: `step4`, `step8`, `step1_3shot`, `step1_5shot`, `step1_10sho
 #### Custom inference and statistics
 
 ```bash
-python src/inference.py --config "src/configs/mecge_table1_repro_${MODEL}.yaml" --checkpoint /path/to/best_model.pt --input /path/to/input.npz --output-dir runs/custom_inference --device cpu
+python src/inference.py --config "src/configs/mecge_table1_repro_${MODEL}.yaml" --checkpoint /path/to/best_model.pt --input /path/to/input.npz --output-dir runs/custom_inference --device cuda:0
 ```
 
 The NPZ contains `noisy_ecg` or `input` shaped `[N,512]` or `[N,1,512]`; optional `clean_reference` or `target` enables paired metrics. Custom strength/frequency sweeps use `src/experiment_suite.py`, and statistical comparisons use `src/result_analysis.py`. See each original tool's `--help` for its input requirements.
