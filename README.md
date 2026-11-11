@@ -6,8 +6,6 @@ ResLSTM-Flow is an ECG denoising model designed to remove baseline wander while 
 
 ![ResLSTM-Flow architecture](figs/architecture.png)
 
-![Table 1: ECG denoising results](figs/table_1.JPG)
-
 ## Pre-requisites
 
 1. Download this repository and open a terminal in its root directory.
@@ -90,6 +88,8 @@ FORCE_RERUN=1 bash scripts/run_mecge_table1_repro.sh --model "$MODEL" --nv all -
 Metrics and comparison tables are generated under `runs/mecge_table1_repro/analysis/`. Combined NV1+NV2 results require both predictions and their matching noise-level arrays.
 
 The following figures show supplied results from earlier experiments. **LSTM v7 (Proposed)** refers to ResLSTM-Flow. The robustness figure combines published EDDM values with local measurements, as noted in its caption.
+
+![Table 1: ECG denoising results](figs/table_1.JPG)
 
 ![Baseline-wander robustness](figs/robustness.jpg)
 
