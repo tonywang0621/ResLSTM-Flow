@@ -4,7 +4,7 @@
 
 ResLSTM-Flow is an ECG denoising model designed to remove baseline wander while preserving cardiac waveform morphology. It combines direct waveform restoration with residual correction to address low-frequency drift and refine the recovered signal. With a single refinement step by default, the model aims to balance denoising quality and inference efficiency for ECG signals affected by varying levels of baseline interference.
 
-![Table 1: ECG denoising results](figs/result_table1.JPG)
+![Table 1: ECG denoising results](figs/table_1.JPG)
 
 ![ResLSTM-Flow architecture](figs/architecture.png)
 
